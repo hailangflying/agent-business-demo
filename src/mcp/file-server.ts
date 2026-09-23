@@ -14,6 +14,7 @@ const server = new Server(
     { capabilities:{tools:{}}},
 );
 
+// 声明知识库读取工具，调用方必须提供文件名。
 server.setRequestHandler(ListToolsRequestSchema, async()=>{
     return {
         tools:[
@@ -41,6 +42,7 @@ server.setRequestHandler(CallToolRequestSchema,async(req)=>{
     }
     const knowledgeRoot = resolveProjectPath("knowledge");
     const filePath = path.resolve(knowledgeRoot, filename);
+    // 双重路径校验用于阻止 ../ 等目录穿越访问。
     if (!filePath.startsWith(`${knowledgeRoot}${path.sep}`)) {
         return {content:[{type:"text",text:"禁止访问知识库目录之外的文件"}], isError:true};
     }
@@ -63,5 +65,6 @@ server.setRequestHandler(CallToolRequestSchema,async(req)=>{
 
 
 const transport = new StdioServerTransport();
+// MCP 日志必须写 stderr，避免污染 stdio 协议消息。
 await server.connect(transport);
 console.error("[MCP FileServer] started");

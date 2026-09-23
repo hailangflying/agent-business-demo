@@ -1,11 +1,17 @@
+# 非敏感运行配置。密码等密钥必须放在 .env 或生产密钥管理系统中。
 database:
-  sqliteFilePath: "./ticket.db"
-  readOnly: true  # MCP数据库账号只读开关，生产强制true
+  host: "127.0.0.1"
+  port: 3306
+  name: "agent_business_demo"
+  user: "root"
+  connectionLimit: 10
 
 
 businessRule:
-  amountAuditThreshold: 1000 #金额审核阈值，从配置读取，代码不再硬写1000
+  # 金额达到该值时创建人工审核任务。
+  amountAuditThreshold: 1000
 
 
 log:
-  level: info #debug /info /warn /error
+  # 可选值：debug / info / warn / error
+  level: info

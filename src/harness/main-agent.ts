@@ -4,6 +4,9 @@ import axios from "axios";
 import readline from "readline";
 import dotenv from "dotenv";
 import {loadConfig, resolveProjectPath} from "../config-loader.js";
+import {randomUUID} from "node:crypto";
+import {decideTicket, type Ticket} from "../domain/ticket.js";
+import type {AuditTaskRequest, AuditTaskResponse} from "../contracts/a2a.js";
 
 dotenv.config();
 
@@ -20,6 +23,7 @@ const logger = {
 };
 
 
+/** 启动一个 stdio MCP 子进程并建立客户端连接。 */
 async function createMcpClient(serverPath:string){
     logger.info(`连接MCP服务：${serverPath}`);
 
@@ -36,16 +40,13 @@ async function createMcpClient(serverPath:string){
 
 
 
-async function callA2AAuditAgent(ticketInfo:string) {
+/** 将达到金额阈值的工单委派给审核 Agent，并返回可展示的任务信息。 */
+async function callA2AAuditAgent(ticket: Ticket, traceId: string) {
     try{
-
-        logger.info(`A2A委派工单信息：${ticketInfo}`);
-        const resp = await axios.post(A2A_AUDIT_URL,{
-            task:"工单审核",
-            payload:ticketInfo,
-        },{timeout:10000});
-
-        return resp.data.result;
+        const request: AuditTaskRequest = {task: "ticket_audit", traceId, ticket};
+        logger.info(`A2A委派工单：${ticket.id} traceId=${traceId}`);
+        const resp = await axios.post<AuditTaskResponse>(A2A_AUDIT_URL, request, {timeout:10000});
+        return `${resp.data.message}（任务号：${resp.data.taskId}）`;
     }catch(err){
         logger.error(`A2A调用失败：${(err as Error).message}`);
         return `❌A2A委派失败：${(err as Error).message}`;
@@ -54,6 +55,7 @@ async function callA2AAuditAgent(ticketInfo:string) {
 }
 
 
+/** 兼容纯 JSON 和被 ```json 包裹的模型输出。 */
 function tryParseJson(raw:string){
     try{
         let txt = raw.trim();
@@ -65,6 +67,7 @@ function tryParseJson(raw:string){
     }    
 }    
 
+/** 从 MCP SDK 的 unknown 返回值中安全提取第一个文本内容块。 */
 function getToolText(result: unknown): string {
     if (!result || typeof result !== "object" || !("content" in result)) {
         throw new Error("MCP 返回格式错误：缺少 content");
@@ -86,6 +89,7 @@ type AgentAction = {
     reason: string;
 };
 
+/** 对 LLM 输出做运行时校验，禁止模型生成的任意对象直接驱动业务流程。 */
 function isAgentAction(value: unknown): value is AgentAction {
     if (!value || typeof value !== "object") return false;
     const action = value as Partial<AgentAction>;
@@ -94,7 +98,12 @@ function isAgentAction(value: unknown): value is AgentAction {
         && typeof action.reason === "string";
 }
 
+/**
+ * 单次用户请求的编排入口：读取规则、调用 LLM、查询工单并执行确定性业务决策。
+ * finally 中始终关闭 MCP 子进程，避免命令行长期运行时泄漏资源。
+ */
 async function runAgent(userQuery:string) {
+    const traceId = randomUUID();
     let mcpFile: Client | null =null;
     let mcpSql : Client | null =null;
     try{
@@ -109,7 +118,9 @@ async function runAgent(userQuery:string) {
         const businessRule = getToolText(ruleRes);
         logger.info("加载业务规则成功");
 
+        // LLM 只做意图识别和 ID 提取，金额阈值仍由领域函数 decideTicket 执行。
         const prompt = `你是企业工单助手。业务规则：${businessRule}
+        当前生效的金额审核阈值：${config.businessRule.amountAuditThreshold}元。
         用户输入：${userQuery}
         你要判断：是否需要查询工单，还是直接回答，还是委派审核。
         严格输出纯JSON，不要额外文字，不要markdown。
@@ -148,6 +159,7 @@ async function runAgent(userQuery:string) {
                 arguments:{ticketId:action.ticketId},
             });
 
+            // MCP 返回统一的 found 包装，未找到工单不会再尝试 JSON 业务解析。
             const ticketText = getToolText(ticketRaw);
             logger.info(`MCP查询工单结果：${ticketText}`);
             const queryResult = JSON.parse(ticketText) as {
@@ -155,11 +167,11 @@ async function runAgent(userQuery:string) {
                 ticket?: {id: number; title: string; amount: number; status: string};
             };
             if (!queryResult.found || !queryResult.ticket) return `未找到工单 ${action.ticketId}`;
-            const ticket = queryResult.ticket;
+            const ticket: Ticket = queryResult.ticket;
 
-
-            if(ticket.amount >= config.businessRule.amountAuditThreshold){
-                return await callA2AAuditAgent(JSON.stringify(ticket));
+            const decision = decideTicket(ticket, config.businessRule.amountAuditThreshold);
+            if(decision.kind === "manual_review_required"){
+                return await callA2AAuditAgent(ticket, traceId);
             }else{
                 return `✅直接答复：工单${ticket.id}金额${ticket.amount}元，无需审核。`;
             }
@@ -183,6 +195,7 @@ async function runAgent(userQuery:string) {
 }
 
 
+/** 启动交互式 CLI；输入 exit 时安全退出。 */
 async function cli() {
     logger.info("====== TS Harness 业务Agent CLI 启动 =====");
     const rl = readline.createInterface({
