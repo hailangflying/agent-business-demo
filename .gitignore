@@ -1,1 +1,37 @@
+# Dependencies
 node_modules/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Build and test output
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Logs and runtime files
+*.log
+logs/
+*.pid
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.swp
