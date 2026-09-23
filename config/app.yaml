@@ -1,0 +1,11 @@
+database:
+  sqliteFilePath: "./ticket.db"
+  readOnly: true  # MCP数据库账号只读开关，生产强制true
+
+
+businessRule:
+  amountAuditThreshold: 1000 #金额审核阈值，从配置读取，代码不再硬写1000
+
+
+log:
+  level: info #debug /info /warn /error

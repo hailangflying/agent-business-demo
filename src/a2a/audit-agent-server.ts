@@ -26,7 +26,11 @@ app.get("/.well-known/agent-card",(req,res)=>{
 
 app.post("/a2a/task",async(req,res)=>{
     try{
-        const payload = req.body.payload;
+        const {task, payload} = req.body as {task?: unknown; payload?: unknown};
+        if (task !== "工单审核" || typeof payload !== "string" || !payload.trim()) {
+            res.status(400).json({error:"task 或 payload 参数不合法"});
+            return;
+        }
         console.log(`[A2A审核Agent]收到委派任务：`,payload);
         res.json({
             result:`✅A2A审核完成：${payload},金额超过1000元，人工复核后审批通过。`

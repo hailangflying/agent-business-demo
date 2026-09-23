@@ -7,6 +7,7 @@ import {
 
 import fs from "fs";
 import path from "path";
+import {resolveProjectPath} from "../config-loader.js";
 
 const server = new Server(
     { name: "business-knowledge" , version:"1.0.0"},
@@ -34,8 +35,15 @@ server.setRequestHandler(ListToolsRequestSchema, async()=>{
 
 server.setRequestHandler(CallToolRequestSchema,async(req)=>{
  try{
-    const {filename} = req.params.arguments as {filename:string};
-    const filePath =path.join("./knowledge",filename);
+    const {filename} = req.params.arguments as {filename?: unknown};
+    if (typeof filename !== "string" || path.basename(filename) !== filename) {
+        return {content:[{type:"text",text:"文件名不合法"}], isError:true};
+    }
+    const knowledgeRoot = resolveProjectPath("knowledge");
+    const filePath = path.resolve(knowledgeRoot, filename);
+    if (!filePath.startsWith(`${knowledgeRoot}${path.sep}`)) {
+        return {content:[{type:"text",text:"禁止访问知识库目录之外的文件"}], isError:true};
+    }
     if(!fs.existsSync(filePath)){
         return {
             content:[{type:"text",text:`错误：文件${filename}不存在`}],

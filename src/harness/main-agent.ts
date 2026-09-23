@@ -3,12 +3,14 @@ import {StdioClientTransport} from "@modelcontextprotocol/sdk/client/stdio.js";
 import axios from "axios";
 import readline from "readline";
 import dotenv from "dotenv";
+import {loadConfig, resolveProjectPath} from "../config-loader.js";
 
 dotenv.config();
 
 const OLLAMA_URL = process.env.OLLAMA_URL||"http://localhost:11434/api/chat";
 const MODEL = process.env.MODEL || "qwen3:8b";
 const A2A_AUDIT_URL =  process.env.A2A_AUDIT_URL || "http://127.0.0.1:8090/a2a/task";
+const config = loadConfig();
 
 
 
@@ -61,21 +63,50 @@ function tryParseJson(raw:string){
         logger.error(`LLM输出JSON解析失败 raw=${raw}`);
         return null;
     }    
+}    
+
+function getToolText(result: unknown): string {
+    if (!result || typeof result !== "object" || !("content" in result)) {
+        throw new Error("MCP 返回格式错误：缺少 content");
+    }
+    const content = (result as {content: unknown}).content;
+    if (!Array.isArray(content) || content.length === 0) {
+        throw new Error("MCP 返回格式错误：content 为空");
+    }
+    const first = content[0];
+    if (!first || typeof first !== "object" || !("text" in first) || typeof first.text !== "string") {
+        throw new Error("MCP 返回格式错误：缺少文本内容");
+    }
+    return first.text;
+}
+
+type AgentAction = {
+    action: "query_ticket" | "direct_reply";
+    ticketId: number | null;
+    reason: string;
+};
+
+function isAgentAction(value: unknown): value is AgentAction {
+    if (!value || typeof value !== "object") return false;
+    const action = value as Partial<AgentAction>;
+    return (action.action === "query_ticket" || action.action === "direct_reply")
+        && (action.ticketId === null || Number.isInteger(action.ticketId))
+        && typeof action.reason === "string";
 }
 
 async function runAgent(userQuery:string) {
     let mcpFile: Client | null =null;
     let mcpSql : Client | null =null;
     try{
-        mcpFile = await createMcpClient("./src/mcp/file-server.ts");
-        mcpSql = await createMcpClient("./src/mcp/sql-server.ts");
+        mcpFile = await createMcpClient(resolveProjectPath("src/mcp/file-server.ts"));
+        mcpSql = await createMcpClient(resolveProjectPath("src/mcp/sql-server.ts"));
 
         const ruleRes = await mcpFile.callTool({
             name :"read_knowledge_doc",
             arguments:{filename:"ticket-rule.md"},
         });
 
-        const businessRule=ruleRes.content[0].text;
+        const businessRule = getToolText(ruleRes);
         logger.info("加载业务规则成功");
 
         const prompt = `你是企业工单助手。业务规则：${businessRule}
@@ -84,7 +115,7 @@ async function runAgent(userQuery:string) {
         严格输出纯JSON，不要额外文字，不要markdown。
         schema:
         {
-            "action":"query_ticket|direct_reply|dekegate_audit",
+            "action":"query_ticket|direct_reply",
             "ticketId":number|null,
             "reason":string
         }`;
@@ -100,28 +131,35 @@ async function runAgent(userQuery:string) {
         
    
         const llnRaw = ollamaRes.data.message.content;
-        const action = tryParseJson(llnRaw);
+        const parsedAction: unknown = tryParseJson(llnRaw);
 
       
         console.error("请求体：", JSON.stringify(llnRaw,null,2))
 
-        if(!action) return "LLM返回格式错误，无法解析指令";
+        if(!isAgentAction(parsedAction)) return "LLM返回格式错误，无法解析指令";
+        const action = parsedAction;
 
         logger.info(`LLM决策：${JSON.stringify(action)}`);
 
-        if(action.action === "query_ticket" && action.ticketId){
+        if(action.action === "query_ticket"){
+            if (!action.ticketId) return "查询工单需要提供有效的工单 ID";
             const ticketRaw = await mcpSql.callTool({
                 name:"query_ticket",
                 arguments:{ticketId:action.ticketId},
             });
 
-            const ticketText = ticketRaw.content[0].text;
+            const ticketText = getToolText(ticketRaw);
             logger.info(`MCP查询工单结果：${ticketText}`);
-            const ticket =JSON.parse(ticketText);
+            const queryResult = JSON.parse(ticketText) as {
+                found: boolean;
+                ticket?: {id: number; title: string; amount: number; status: string};
+            };
+            if (!queryResult.found || !queryResult.ticket) return `未找到工单 ${action.ticketId}`;
+            const ticket = queryResult.ticket;
 
 
-            if(ticket.amount>=1000){
-                return await callA2AAuditAgent(ticketText);
+            if(ticket.amount >= config.businessRule.amountAuditThreshold){
+                return await callA2AAuditAgent(JSON.stringify(ticket));
             }else{
                 return `✅直接答复：工单${ticket.id}金额${ticket.amount}元，无需审核。`;
             }
