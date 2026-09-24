@@ -1,6 +1,41 @@
 # A2A 接口
 
-默认地址：`http://127.0.0.1:8090`。
+## Agent API
+
+默认地址：`http://127.0.0.1:8080`。
+
+### 查询 Agent
+
+`POST /api/v1/agent/query`
+
+```json
+{
+  "message": "查询工单3"
+}
+```
+
+成功响应包含 `traceId`、结果类型、业务消息，以及可选的工单和审核任务号。调用方可以传入 `X-Request-Id` 作为 Trace ID；配置 `AGENT_API_KEY` 后还必须携带 `X-API-Key`。
+
+```json
+{
+  "traceId": "e9eef2ea-1f6d-46c5-b459-0a5eed68bc94",
+  "type": "manual_review_required",
+  "message": "工单 3 已进入人工审核队列",
+  "ticket": {
+    "id": 3,
+    "title": "服务器采购",
+    "amount": 2000,
+    "status": "待审核"
+  },
+  "taskId": "5853d4f8-7871-4adc-8876-3bb47971693d"
+}
+```
+
+Agent API 同样提供 `/health/live` 和 `/health/ready`。
+
+## 审核 A2A API
+
+默认内部地址：`http://127.0.0.1:8090`。
 
 ## 创建审核任务
 

@@ -19,10 +19,10 @@
 ## 架构
 
 ```text
-用户 CLI
+业务系统 / Web / CLI
    │
    ▼
-主 Agent / Harness
+Agent HTTP API / AgentService
    ├── Ollama：意图识别、提取工单 ID
    ├── 文件 MCP：读取 knowledge/ticket-rule.md
    └── 数据库 MCP：只执行工单查询
@@ -39,7 +39,7 @@
        audit_tasks 表
 ```
 
-更详细的职责和调用时序见 [架构文档](docs/architecture.md)，A2A 接口定义见 [接口文档](docs/api.md)。
+更详细的职责和调用时序见 [架构文档](docs/architecture.md)，接口定义见 [接口文档](docs/api.md)，每个文件及代码段的作用见 [代码逐段导读](docs/code-walkthrough.md)。
 
 ## 目录结构
 
@@ -62,8 +62,6 @@
 ├─ .env.example                    # 环境变量模板
 └─ package.json                    # 脚本和依赖
 ```
-
-旧的 SQLite 文件及迁移不参与当前运行流程，正式路径为 `migrations-mysql` 和 `seed-mysql`。
 
 ## 环境要求
 
@@ -116,13 +114,33 @@ npm run db:init
 
 ## 启动
 
+### 本地 HTTP 方式
+
 先在第一个终端启动审核 Agent：
 
 ```powershell
 npm run a2a
 ```
 
-再在第二个终端启动主 Agent：
+再在第二个终端启动主 Agent HTTP API：
+
+```powershell
+npm run api
+```
+
+调用接口：
+
+```powershell
+$body = @{ message = "查询工单5" } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8080/api/v1/agent/query `
+  -ContentType application/json `
+  -Body $body
+```
+
+### 本地 CLI 方式
+
+需要命令行交互时启动：
 
 ```powershell
 npm run harness
@@ -152,9 +170,12 @@ exit
 |---|---|
 | `npm run db:init` | 执行 MySQL 迁移并在非生产环境加载种子数据 |
 | `npm run a2a` | 启动审核 Agent HTTP 服务 |
+| `npm run api` | 启动面向业务系统的 Agent HTTP API |
 | `npm run harness` | 启动交互式主 Agent |
 | `npm run typecheck` | 执行 TypeScript 严格类型检查 |
 | `npm test` | 执行类型检查和领域规则测试 |
+| `npm run build` | 编译生产 JavaScript 到 `dist` |
+| `npm run start:api` | 运行已编译的 Agent API |
 
 ## 配置
 
@@ -179,6 +200,9 @@ exit
 | `MODEL` | 否 | Ollama 模型名 |
 | `A2A_AUDIT_URL` | 否 | 审核 Agent 地址 |
 | `A2A_PORT` | 否 | 审核服务端口 |
+| `AGENT_API_PORT` | 否 | Agent HTTP API 端口，默认 8080 |
+| `AGENT_API_KEY` | 否 | 配置后要求业务请求携带 `x-api-key`；生产必填 |
+| `DB_HOST` 等 | 否 | 覆盖 YAML 数据库配置，供容器部署使用 |
 | `NODE_ENV` | 否 | 设置为 `production` 时跳过种子数据 |
 
 ## 数据库表
@@ -194,6 +218,36 @@ exit
 - `GET /health/live`：进程是否存活，不检查外部依赖。
 - `GET /health/ready`：服务是否可接收流量，会执行 MySQL 探测。
 - `GET /.well-known/agent-card`：返回审核 Agent 能力描述。
+
+Agent API 另提供：
+
+- `POST /api/v1/agent/query`：业务系统调用的统一入口。
+- `GET /health/live`：Agent API 进程存活检查。
+- `GET /health/ready`：确认常驻 MCP 客户端已经连接。
+
+## Docker 部署
+
+项目提供 `Dockerfile` 和 `compose.yaml`。Compose 会启动 `agent-api` 与内部 `audit-agent`，复用宿主机已有的 MySQL 和 Ollama。
+
+```powershell
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+业务系统只需访问宿主机的 `8080` 端口。审核 Agent 不映射宿主机端口，MySQL 与 MCP 也不对业务方暴露。
+
+```text
+http://服务器地址:8080/api/v1/agent/query
+```
+
+停止服务：
+
+```powershell
+docker compose down
+```
+
+上线时应由网关或 Ingress 提供 HTTPS，并设置 `AGENT_API_KEY` 或接入企业统一认证。
 
 ## 测试
 

@@ -12,7 +12,13 @@
 
 ### 主 Agent
 
-`src/harness/main-agent.ts` 是流程编排入口。它负责生成 Trace ID、启动 MCP 子进程、调用 Ollama、校验模型输出、查询工单和调用领域策略。它不直接访问数据库。
+`src/application/agent-service.ts` 是可复用流程编排核心。HTTP 和 CLI 共享该服务。它负责生成 Trace ID、调用 Ollama、校验模型输出、查询工单和调用领域策略，但不直接访问数据库。
+
+AgentService 启动时建立两个 MCP 连接，后续请求复用连接；进程关闭时统一释放。这样避免线上每个请求重复创建子进程。
+
+### 业务入口
+
+`src/api/agent-api-server.ts` 暴露业务 HTTP API；`src/cli/agent-cli.ts` 提供本地交互入口。两者都不包含业务判断，只负责协议转换和生命周期管理。
 
 ### 文件 MCP
 

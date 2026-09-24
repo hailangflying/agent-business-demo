@@ -9,6 +9,5 @@
   "esModuleInterop": true,
   "skipLibCheck": true
 },
-"include":["src/**/*"],
-"exclude":["src/**/*-bak.ts"]
+"include":["src/**/*"]
 }

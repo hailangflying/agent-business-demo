@@ -1,7 +1,9 @@
+/** 工单金额策略的边界测试，防止阈值比较在后续修改中发生回归。 */
 import assert from "node:assert/strict";
 import test from "node:test";
 import {decideTicket, type Ticket} from "./ticket.js";
 
+// 测试只关心金额，使用工厂函数生成其余固定字段。
 const ticket = (amount: number): Ticket => ({id: 1, title: "测试工单", amount, status: "待处理"});
 
 test("低于阈值时可以直接答复", () => {

@@ -1,0 +1,43 @@
+services:
+  # 对业务系统暴露的主 Agent HTTP 服务。
+  agent-api:
+    build: .
+    image: agent-business-demo:local
+    command: ["node", "dist/api/agent-api-server.js"]
+    restart: unless-stopped
+    ports:
+      # 只有主 API 映射到宿主机；业务方通过 8080 访问。
+      - "8080:8080"
+    environment:
+      AGENT_API_PORT: "8080"
+      AGENT_API_KEY: "${AGENT_API_KEY:-}"
+      DB_HOST: "host.docker.internal"
+      DB_PORT: "3306"
+      DB_NAME: "agent_business_demo"
+      DB_USER: "root"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      OLLAMA_URL: "http://host.docker.internal:11434/api/chat"
+      MODEL: "${MODEL:-qwen3:8b}"
+      A2A_AUDIT_URL: "http://audit-agent:8090/a2a/task"
+    # 允许容器访问宿主机上已经运行的 MySQL 和 Ollama。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      # 先创建审核服务容器，再启动主 API。
+      audit-agent:
+        condition: service_started
+
+  # 内部审核服务，不配置 ports，因此不会直接暴露给宿主机或业务方。
+  audit-agent:
+    image: agent-business-demo:local
+    command: ["node", "dist/a2a/audit-agent-server.js"]
+    restart: unless-stopped
+    environment:
+      A2A_PORT: "8090"
+      DB_HOST: "host.docker.internal"
+      DB_PORT: "3306"
+      DB_NAME: "agent_business_demo"
+      DB_USER: "root"
+      DB_PASSWORD: "${DB_PASSWORD}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

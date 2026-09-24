@@ -1,3 +1,7 @@
+/**
+ * 知识库 MCP 服务。
+ * 只暴露读取 knowledge 目录文件的受控工具，不允许调用方访问任意磁盘路径。
+ */
 import {Server} from "@modelcontextprotocol/sdk/server/index.js";
 import {StdioServerTransport} from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -36,6 +40,7 @@ server.setRequestHandler(ListToolsRequestSchema, async()=>{
 
 server.setRequestHandler(CallToolRequestSchema,async(req)=>{
  try{
+    // MCP 参数属于外部输入，先验证类型，并禁止 filename 自带目录部分。
     const {filename} = req.params.arguments as {filename?: unknown};
     if (typeof filename !== "string" || path.basename(filename) !== filename) {
         return {content:[{type:"text",text:"文件名不合法"}], isError:true};
@@ -57,6 +62,7 @@ server.setRequestHandler(CallToolRequestSchema,async(req)=>{
         content:[{type:"text",text:content}],
     };
  }catch(err){
+    // 工具异常使用 MCP 文本结果返回，避免子进程直接崩溃。
     return {
         content:[{type:"text",text:`读取文档异常：${(err as Error).message}`}],
     };

@@ -1,3 +1,7 @@
+/**
+ * 独立的工单审核 Agent HTTP 服务。
+ * 它接收主 Agent 的结构化委派，创建人工审核任务，但不会自动批准高金额工单。
+ */
 import express from "express";
 import dotenv from "dotenv";
 import {randomUUID} from "node:crypto";
@@ -38,6 +42,7 @@ const agentCard = {
 
 
 app.get("/.well-known/agent-card",(req,res)=>{
+    // Agent Card 供其他 Agent 或服务发现本服务的身份和能力。
     res.json(agentCard);
 });
 
@@ -60,6 +65,7 @@ app.post("/a2a/task",async(req,res)=>{
             return;
         }
         const {traceId, ticket} = req.body;
+        // JSON 日志带上 traceId 和 ticketId，方便在集中日志中关联一次业务请求。
         console.log(JSON.stringify({level: "info", event: "audit_task_received", traceId, ticketId: ticket.id}));
         const taskId = randomUUID();
         const now = new Date();
@@ -75,8 +81,10 @@ app.post("/a2a/task",async(req,res)=>{
             status: "manual_review_required",
             message: `工单 ${ticket.id} 已进入人工审核队列`,
         };
+        // 202 表示任务已经接收并进入后续人工处理，而不是已经审批完成。
         res.status(202).json(result);
     }catch(e){
+        // 不把数据库错误或堆栈返回给调用方，避免泄露内部信息。
         res.status(500).json({code: "AUDIT_INTERNAL_ERROR", message: "审核服务内部异常"});
     }
 });

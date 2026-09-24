@@ -1,3 +1,4 @@
+/** 主 Agent 与审核 Agent 之间共享的数据协议。 */
 import type {Ticket} from "../domain/ticket.js";
 
 /** 主 Agent 委派给审核 Agent 的稳定协议。 */

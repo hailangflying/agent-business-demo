@@ -5,8 +5,13 @@
   "main": "index.js",
   "scripts": {
     "a2a": "tsx src/a2a/audit-agent-server.ts",
-    "harness": "tsx src/harness/main-agent.ts",
+    "api": "tsx src/api/agent-api-server.ts",
+    "harness": "tsx src/cli/agent-cli.ts",
     "db:init": "tsx src/db-init.ts",
+    "build": "tsc",
+    "start:api": "node dist/api/agent-api-server.js",
+    "start:a2a": "node dist/a2a/audit-agent-server.js",
+    "start:cli": "node dist/cli/agent-cli.js",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && tsx --test src/domain/ticket.test.ts"
   },
@@ -21,8 +26,6 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.20.4",
-    "@types/yaml": "^1.9.6",
-    "ts-node": "^10.9.2",
     "tsx": "^4.19.1",
     "typescript": "^5.9.3"
   },
