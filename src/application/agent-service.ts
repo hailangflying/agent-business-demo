@@ -8,9 +8,10 @@ import {StdioClientTransport} from "@modelcontextprotocol/sdk/client/stdio.js";
 import axios from "axios";
 import {randomUUID} from "node:crypto";
 import {fileURLToPath} from "node:url";
+import {Role, TaskState, type Task} from "@a2a-js/sdk";
+import {ClientFactory} from "@a2a-js/sdk/client";
 import {loadConfig, resolveProjectPath} from "../config-loader.js";
 import {decideTicket, type Ticket} from "../domain/ticket.js";
-import type {AuditTaskRequest, AuditTaskResponse} from "../contracts/a2a.js";
 
 /** HTTP 和 CLI 共用的结构化业务结果。 */
 export type AgentQueryResult = {
@@ -26,6 +27,32 @@ type AgentAction = {
     ticketId: number | null;
     reason: string;
 };
+
+type AuditTaskOutput = {
+    taskId: string;
+    traceId: string;
+    status: "manual_review_required";
+    message: string;
+};
+
+/** 从标准 A2A Task 的 Artifact 中提取并校验审核 Agent 的业务结果。 */
+function getAuditOutput(task: Task): AuditTaskOutput {
+    if (task.status?.state !== TaskState.TASK_STATE_COMPLETED) {
+        throw new Error(`A2A 审核任务未完成，状态：${task.status?.state ?? "unknown"}`);
+    }
+    const value = task.artifacts
+        .flatMap((artifact) => artifact.parts)
+        .find((part) => part.content?.$case === "data")?.content?.value;
+    if (!value || typeof value !== "object") throw new Error("A2A 审核结果缺少 DataPart Artifact");
+    const output = value as Partial<AuditTaskOutput>;
+    if (typeof output.taskId !== "string"
+        || typeof output.traceId !== "string"
+        || output.status !== "manual_review_required"
+        || typeof output.message !== "string") {
+        throw new Error("A2A 审核结果格式不符合业务约定");
+    }
+    return output as AuditTaskOutput;
+}
 
 /** 对 LLM 输出做运行时校验，禁止任意模型输出直接驱动工具调用。 */
 function isAgentAction(value: unknown): value is AgentAction {
@@ -81,7 +108,9 @@ export class AgentService {
     // 模型地址、模型名和审核地址允许用环境变量覆盖，方便不同环境部署。
     private readonly ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434/api/chat";
     private readonly model = process.env.MODEL || "qwen3:8b";
-    private readonly auditUrl = process.env.A2A_AUDIT_URL || "http://127.0.0.1:8090/a2a/task";
+    // A2A Client 从标准 Agent Card 发现端点和协议版本，而不是硬编码自定义接口。
+    private readonly auditAgentUrl = process.env.A2A_AUDIT_URL || "http://127.0.0.1:8090";
+    private auditClient: Awaited<ReturnType<ClientFactory["createFromUrl"]>> | null = null;
     // 两个 MCP Client 分别连接知识库工具和数据库查询工具。
     private fileClient: Client | null = null;
     private sqlClient: Client | null = null;
@@ -179,15 +208,41 @@ export class AgentService {
             };
         }
 
-        // 只有领域规则要求审核时，才调用独立的审核 Agent 创建持久化任务。
-        const auditRequest: AuditTaskRequest = {task: "ticket_audit", traceId, ticket};
-        const auditResponse = await axios.post<AuditTaskResponse>(this.auditUrl, auditRequest, {timeout: 10_000});
+        // 通过官方 ClientFactory 获取 Agent Card，协商 A2A 1.0 JSON-RPC 传输。
+        this.auditClient ??= await new ClientFactory().createFromUrl(this.auditAgentUrl);
+        const a2aResult = await this.auditClient.sendMessage({
+            tenant: "",
+            message: {
+                messageId: randomUUID(),
+                contextId: "",
+                taskId: "",
+                role: Role.ROLE_USER,
+                parts: [{
+                    content: {$case: "data", value: {task: "ticket_audit", traceId, ticket}},
+                    mediaType: "application/json",
+                    filename: "",
+                    metadata: undefined,
+                }],
+                metadata: {traceId},
+                extensions: [],
+                referenceTaskIds: [],
+            },
+            configuration: {
+                acceptedOutputModes: ["application/json"],
+                taskPushNotificationConfig: undefined,
+                historyLength: 10,
+                returnImmediately: false,
+            },
+            metadata: {traceId},
+        }, {signal: AbortSignal.timeout(10_000)});
+        if (!("status" in a2aResult)) throw new Error("审核 Agent 未返回 A2A Task");
+        const auditResponse = getAuditOutput(a2aResult);
         return {
             traceId,
             type: "manual_review_required",
-            message: auditResponse.data.message,
+            message: auditResponse.message,
             ticket,
-            taskId: auditResponse.data.taskId,
+            taskId: auditResponse.taskId,
         };
     }
 

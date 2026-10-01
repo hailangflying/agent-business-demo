@@ -1,21 +1,35 @@
 /**
- * 独立的工单审核 Agent HTTP 服务。
- * 它接收主 Agent 的结构化委派，创建人工审核任务，但不会自动批准高金额工单。
+ * 标准 A2A 1.0 工单审核 Agent。
+ * 传输、版本协商、Task 生命周期和 Agent Card 均由官方 SDK 实现。
  */
 import express from "express";
 import dotenv from "dotenv";
 import {randomUUID} from "node:crypto";
 import mysql from "mysql2/promise";
-import {isAuditTaskRequest, type AuditTaskResponse} from "../contracts/a2a.js";
+import {type AgentCard, type Message, type Part, Role, TaskState, type Task} from "@a2a-js/sdk";
+import {
+    AgentEvent,
+    type AgentExecutor,
+    DefaultRequestHandler,
+    type ExecutionEventBus,
+    InMemoryTaskStore,
+    type RequestContext,
+} from "@a2a-js/sdk/server";
+import {agentCardHandler, jsonRpcHandler, UserBuilder} from "@a2a-js/sdk/server/express";
 import {loadConfig} from "../config-loader.js";
+import type {Ticket} from "../domain/ticket.js";
+
 dotenv.config();
+
 const app = express();
-// 隐藏框架标识并限制请求体大小，降低信息泄露和大包攻击风险。
+const port = Number(process.env.A2A_PORT) || 8090;
+const config = loadConfig();
+const publicBaseUrl = process.env.A2A_PUBLIC_URL || `http://127.0.0.1:${port}`;
+const a2aEndpoint = `${publicBaseUrl.replace(/\/$/, "")}/a2a`;
+
 app.disable("x-powered-by");
 app.use(express.json({limit: "64kb"}));
-const PORT = Number(process.env.A2A_PORT) || 8090;
-const config = loadConfig();
-// 审核服务需要写入审核任务，因此使用独立连接池而不是只读 MCP 查询服务。
+
 const db = mysql.createPool({
     host: config.database.host,
     port: config.database.port,
@@ -26,27 +40,156 @@ const db = mysql.createPool({
     decimalNumbers: true,
 });
 
-const agentCard = {
-    agentId:"audit-agent-001",
-    name:"工单审核Agent",
-    description:"负责大额工单风险审核",
-    skills:[
-        {
-            skillId:"ticket_audit",
-            description:"大额工单风险审核,判断是否可以通过",
-            input:"工单JSON信息",
-            output:"审批意见"
-        },
-    ],
+type TicketAuditInput = {task: "ticket_audit"; traceId: string; ticket: Ticket};
+type TicketAuditOutput = {
+    taskId: string;
+    traceId: string;
+    status: "manual_review_required";
+    message: string;
 };
 
+/** 协议层校验不能代替业务校验，因此 DataPart 解包后仍检查每个字段。 */
+function isTicketAuditInput(value: unknown): value is TicketAuditInput {
+    if (!value || typeof value !== "object") return false;
+    const request = value as Partial<TicketAuditInput>;
+    const ticket = request.ticket as Partial<Ticket> | undefined;
+    return request.task === "ticket_audit"
+        && typeof request.traceId === "string" && request.traceId.length > 0
+        && !!ticket && Number.isInteger(ticket.id)
+        && typeof ticket.title === "string"
+        && typeof ticket.amount === "number" && Number.isFinite(ticket.amount)
+        && typeof ticket.status === "string";
+}
 
-app.get("/.well-known/agent-card",(req,res)=>{
-    // Agent Card 供其他 Agent 或服务发现本服务的身份和能力。
-    res.json(agentCard);
-});
+function agentMessage(taskId: string, contextId: string, text: string): Message {
+    return {
+        messageId: randomUUID(), contextId, taskId, role: Role.ROLE_AGENT,
+        parts: [{content: {$case: "text", value: text}, mediaType: "text/plain", filename: "", metadata: undefined}],
+        metadata: undefined, extensions: [], referenceTaskIds: [],
+    };
+}
 
-// live 只表示进程存活；ready 会真实探测数据库，供容器编排判断是否接流量。
+function auditInput(parts: Part[]): unknown {
+    return parts.find((part) => part.content?.$case === "data")?.content?.value;
+}
+
+/** 官方 AgentExecutor：只负责业务执行，通过 EventBus 发布标准 A2A 事件。 */
+class TicketAuditExecutor implements AgentExecutor {
+    async execute(context: RequestContext, eventBus: ExecutionEventBus): Promise<void> {
+        const {taskId, contextId, userMessage} = context;
+        const submittedTask: Task = {
+            id: taskId,
+            contextId,
+            status: {state: TaskState.TASK_STATE_SUBMITTED, message: undefined, timestamp: new Date().toISOString()},
+            artifacts: [],
+            history: [userMessage],
+            metadata: undefined,
+        };
+
+        // A2A 1.0 要求第一个事件必须是 Task 或 Message。
+        eventBus.publish(AgentEvent.task(submittedTask));
+        const input = auditInput(userMessage.parts);
+        if (!isTicketAuditInput(input)) {
+            eventBus.publish(AgentEvent.statusUpdate({
+                taskId, contextId,
+                status: {
+                    state: TaskState.TASK_STATE_REJECTED,
+                    message: agentMessage(taskId, contextId, "审核任务参数不合法"),
+                    timestamp: new Date().toISOString(),
+                },
+                metadata: undefined,
+            }));
+            return;
+        }
+
+        eventBus.publish(AgentEvent.statusUpdate({
+            taskId, contextId,
+            status: {
+                state: TaskState.TASK_STATE_WORKING,
+                message: agentMessage(taskId, contextId, "正在创建人工审核任务"),
+                timestamp: new Date().toISOString(),
+            },
+            metadata: undefined,
+        }));
+
+        const now = new Date();
+        await db.execute(
+            `INSERT INTO audit_tasks(id, trace_id, ticket_id, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [taskId, input.traceId, input.ticket.id, "manual_review_required", now, now],
+        );
+
+        const output: TicketAuditOutput = {
+            taskId,
+            traceId: input.traceId,
+            status: "manual_review_required",
+            message: `工单 ${input.ticket.id} 已进入人工审核队列`,
+        };
+
+        // Artifact 是标准 A2A Task 的结构化业务产物。
+        eventBus.publish(AgentEvent.artifactUpdate({
+            taskId, contextId,
+            artifact: {
+                artifactId: randomUUID(),
+                name: "ticket-audit-result",
+                description: "工单人工审核任务创建结果",
+                parts: [{content: {$case: "data", value: output}, mediaType: "application/json", filename: "", metadata: undefined}],
+                metadata: undefined,
+                extensions: [],
+            },
+            append: false,
+            lastChunk: true,
+            metadata: undefined,
+        }));
+
+        // COMPLETED 表示“创建审核记录”完成，不代表工单已经审批通过。
+        eventBus.publish(AgentEvent.statusUpdate({
+            taskId, contextId,
+            status: {
+                state: TaskState.TASK_STATE_COMPLETED,
+                message: agentMessage(taskId, contextId, output.message),
+                timestamp: new Date().toISOString(),
+            },
+            metadata: undefined,
+        }));
+    }
+
+    async cancelTask(taskId: string, eventBus: ExecutionEventBus): Promise<void> {
+        eventBus.finished();
+        console.warn(JSON.stringify({level: "warn", event: "cancel_not_supported", taskId}));
+    }
+}
+
+const agentCard: AgentCard = {
+    name: "工单审核 Agent",
+    description: "接收大额工单审核委派并创建人工审核任务",
+    supportedInterfaces: [{url: a2aEndpoint, protocolBinding: "JSONRPC", protocolVersion: "1.0", tenant: ""}],
+    provider: {organization: "agent-business-demo", url: publicBaseUrl},
+    version: "1.0.0",
+    capabilities: {streaming: false, pushNotifications: false, extendedAgentCard: false, extensions: []},
+    securitySchemes: {},
+    securityRequirements: [],
+    defaultInputModes: ["application/json"],
+    defaultOutputModes: ["application/json", "text/plain"],
+    skills: [{
+        id: "ticket-audit",
+        name: "工单人工审核委派",
+        description: "为需要人工处理的大额工单创建审核任务",
+        tags: ["ticket", "audit", "manual-review"],
+        examples: ["为工单 3 创建人工审核任务"],
+        inputModes: ["application/json"],
+        outputModes: ["application/json"],
+        securityRequirements: [],
+    }],
+    signatures: [],
+};
+
+const requestHandler = new DefaultRequestHandler(agentCard, new InMemoryTaskStore(), new TicketAuditExecutor());
+
+// SDK 的 Card Handler 还会处理 ETag、缓存头及条件请求。
+app.use("/.well-known/agent-card.json", agentCardHandler({agentCardProvider: requestHandler}));
+app.use("/a2a", jsonRpcHandler({requestHandler, userBuilder: UserBuilder.noAuthentication}));
+
 app.get("/health/live", (_req, res) => res.json({status: "ok"}));
 app.get("/health/ready", async (_req, res) => {
     try {
@@ -57,63 +200,18 @@ app.get("/health/ready", async (_req, res) => {
     }
 });
 
-app.post("/a2a/task",async(req,res)=>{
-    try{
-        // 所有外部输入先做运行时校验，非法数据不会进入数据库层。
-        if (!isAuditTaskRequest(req.body)) {
-            res.status(400).json({code: "INVALID_AUDIT_TASK", message: "审核任务参数不合法"});
-            return;
-        }
-        const {traceId, ticket} = req.body;
-        // JSON 日志带上 traceId 和 ticketId，方便在集中日志中关联一次业务请求。
-        console.log(JSON.stringify({level: "info", event: "audit_task_received", traceId, ticketId: ticket.id}));
-        const taskId = randomUUID();
-        const now = new Date();
-        // 这里只创建待人工审核任务，不在无人参与的情况下自动批准高金额工单。
-        await db.execute(
-            `INSERT INTO audit_tasks(id, trace_id, ticket_id, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [taskId, traceId, ticket.id, "manual_review_required", now, now],
-        );
-        const result: AuditTaskResponse = {
-            taskId,
-            traceId,
-            status: "manual_review_required",
-            message: `工单 ${ticket.id} 已进入人工审核队列`,
-        };
-        // 202 表示任务已经接收并进入后续人工处理，而不是已经审批完成。
-        res.status(202).json(result);
-    }catch(e){
-        // 不把数据库错误或堆栈返回给调用方，避免泄露内部信息。
-        res.status(500).json({code: "AUDIT_INTERNAL_ERROR", message: "审核服务内部异常"});
-    }
-});
-
-app.use((_req, res) => res.status(404).json({code: "NOT_FOUND", message: "接口不存在"}));
-
-// 最终兜底错误处理中不回传内部堆栈，详细错误只记录在服务端。
-app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error(JSON.stringify({level: "error", event: "unhandled_error", error: String(error)}));
-    res.status(500).json({code: "INTERNAL_ERROR", message: "服务内部异常"});
-});
-
-
-const httpServer = app.listen(PORT,()=>{
-    console.log(`[A2A Audit Agent] running on http://127.0.0.1:${PORT}`);
-    console.log(`Agent Card:http://127.0.0.1:${PORT}/.well-known/agent-card`);
+const httpServer = app.listen(port, () => {
+    console.log(`[A2A 1.0 Audit Agent] ${a2aEndpoint}`);
+    console.log(`[Agent Card] ${publicBaseUrl}/.well-known/agent-card.json`);
 });
 httpServer.requestTimeout = 15_000;
 httpServer.headersTimeout = 20_000;
 
-/** 收到退出信号后停止接收新请求，等待连接池关闭，最多等待 10 秒。 */
 function shutdown(signal: string) {
     console.log(JSON.stringify({level: "info", event: "shutdown", signal}));
-    httpServer.close(() => {
-        void db.end().finally(() => process.exit(0));
-    });
+    httpServer.close(() => void db.end().finally(() => process.exit(0)));
     setTimeout(() => process.exit(1), 10_000).unref();
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
-

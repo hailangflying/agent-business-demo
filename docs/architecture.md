@@ -34,7 +34,7 @@ AgentService 启动时建立两个 MCP 连接，后续请求复用连接；进�
 
 ### 审核 Agent
 
-`src/a2a/audit-agent-server.ts` 接收结构化 A2A 请求，创建审核任务并返回 HTTP 202。当前服务不会自动批准，只把任务置为 `manual_review_required`。
+`src/a2a/audit-agent-server.ts` 使用官方 `@a2a-js/sdk` 实现 A2A 1.0 JSON-RPC 服务。它发布标准 Agent Card，接收 `SendMessage`，按 `SUBMITTED -> WORKING -> COMPLETED` 推进协议任务，并用 Artifact 返回结构化审核结果。当前服务不会自动批准，只把业务审核状态置为 `manual_review_required`。
 
 ### MySQL
 
@@ -50,9 +50,10 @@ AgentService 启动时建立两个 MCP 连接，后续请求复用连接；进�
 数据库 MCP -> MySQL：参数化 SELECT
 主 Agent -> 领域策略：decideTicket(ticket, threshold)
 领域策略 -> 主 Agent：manual_review_required
-主 Agent -> 审核 Agent：POST /a2a/task
+主 Agent -> 审核 Agent：发现 /.well-known/agent-card.json
+主 Agent -> 审核 Agent：A2A 1.0 SendMessage（JSON-RPC）
 审核 Agent -> MySQL：INSERT audit_tasks
-审核 Agent -> 主 Agent：202 + taskId
+审核 Agent -> 主 Agent：Task + Artifact
 主 Agent -> 用户：已进入人工审核队列
 ```
 
@@ -61,11 +62,11 @@ AgentService 启动时建立两个 MCP 连接，后续请求复用连接；进�
 - 用户输入和 LLM 输出均不可信。
 - MCP 参数、HTTP JSON 和配置文件都需要校验。
 - MySQL 密码只允许从环境变量或生产密钥系统注入。
-- A2A 当前没有身份认证，只适合受控本地网络；生产部署必须增加服务身份认证。
+- A2A 协议已标准化，但当前 Agent Card 声明为无认证，只适合受控内部网络；生产部署必须增加 Bearer/OAuth2 或 mTLS 服务身份认证，并在 Agent Card 声明安全方案。
 
 ## 扩展方式
 
 - 新业务规则：加入 `domain` 并编写边界测试。
-- 新外部协议：在 `contracts` 定义请求和响应，并提供运行时校验。
+- 新 A2A 能力：增加 Agent Skill，并在 `AgentExecutor` 中校验 DataPart 后执行。
 - 新 MCP 工具：工具只能封装预定义能力，禁止提供任意 SQL 或任意文件访问。
 - 数据库变更：新增 `V数字__描述.sql`，禁止修改已执行迁移。

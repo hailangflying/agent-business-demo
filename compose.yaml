@@ -18,7 +18,7 @@ services:
       DB_PASSWORD: "${DB_PASSWORD}"
       OLLAMA_URL: "http://host.docker.internal:11434/api/chat"
       MODEL: "${MODEL:-qwen3:8b}"
-      A2A_AUDIT_URL: "http://audit-agent:8090/a2a/task"
+      A2A_AUDIT_URL: "http://audit-agent:8090"
     # 允许容器访问宿主机上已经运行的 MySQL 和 Ollama。
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -34,6 +34,8 @@ services:
     restart: unless-stopped
     environment:
       A2A_PORT: "8090"
+      # Agent Card 中的接口必须是调用方容器实际可访问的地址。
+      A2A_PUBLIC_URL: "http://audit-agent:8090"
       DB_HOST: "host.docker.internal"
       DB_PORT: "3306"
       DB_NAME: "agent_business_demo"

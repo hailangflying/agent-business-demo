@@ -37,26 +37,51 @@ Agent API 同样提供 `/health/live` 和 `/health/ready`。
 
 默认内部地址：`http://127.0.0.1:8090`。
 
-## 创建审核任务
+### Agent 发现
 
-`POST /a2a/task`
+标准 Agent Card：`GET /.well-known/agent-card.json`
 
-请求：
+Card 声明 A2A `1.0`、`JSONRPC` 绑定、服务地址、输入输出媒体类型和 `ticket-audit` Skill。主 Agent 使用官方 `ClientFactory` 读取 Card 并选择传输，不再硬编码自定义任务接口。
+
+### 创建审核任务
+
+协议端点：`POST /a2a`
+
+调用方法为 A2A 1.0 `SendMessage`。正常业务代码应使用 `@a2a-js/sdk`，下面仅展示线上的 JSON-RPC 形态：
 
 ```json
 {
-  "task": "ticket_audit",
-  "traceId": "e9eef2ea-1f6d-46c5-b459-0a5eed68bc94",
-  "ticket": {
-    "id": 3,
-    "title": "服务器采购",
-    "amount": 2000,
-    "status": "待审核"
+  "jsonrpc": "2.0",
+  "id": "request-1",
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "messageId": "message-1",
+      "role": "ROLE_USER",
+      "parts": [{
+        "data": {
+          "task": "ticket_audit",
+          "traceId": "e9eef2ea-1f6d-46c5-b459-0a5eed68bc94",
+          "ticket": {"id": 3, "title": "服务器采购", "amount": 2000, "status": "待审核"}
+        },
+        "mediaType": "application/json"
+      }]
+    },
+    "configuration": {
+      "acceptedOutputModes": ["application/json"],
+      "returnImmediately": false
+    }
   }
 }
 ```
 
-成功响应：HTTP `202 Accepted`
+HTTP 请求必须携带 `A2A-Version: 1.0`。成功结果是标准 Task，生命周期为：
+
+```text
+SUBMITTED -> WORKING -> COMPLETED
+```
+
+最终 Artifact 的 `application/json` DataPart 包含：
 
 ```json
 {
@@ -67,14 +92,7 @@ Agent API 同样提供 `/health/live` 和 `/health/ready`。
 }
 ```
 
-参数错误：HTTP `400 Bad Request`
-
-```json
-{
-  "code": "INVALID_AUDIT_TASK",
-  "message": "审核任务参数不合法"
-}
-```
+这里 Task 的 `COMPLETED` 表示委派动作已经执行完成，Artifact 中的 `manual_review_required` 才是工单的业务审核状态。参数不合法时 Task 进入 `REJECTED`。
 
 ## 健康检查
 
@@ -86,10 +104,6 @@ Agent API 同样提供 `/health/live` 和 `/health/ready`。
 
 执行 `SELECT 1` 检查 MySQL。正常返回 200；数据库不可用时返回 503。
 
-## Agent Card
-
-`GET /.well-known/agent-card` 返回审核 Agent 的标识、描述和技能信息。
-
 ## 错误约定
 
-错误使用稳定的 `code` 供程序判断，并使用 `message` 展示通用说明。响应不会暴露 SQL、密码、内部路径或异常堆栈。
+A2A 协议错误由官方 SDK 按标准 JSON-RPC 错误返回；业务拒绝通过 Task 状态和 Message 表达。响应不会暴露 SQL、密码、内部路径或异常堆栈。

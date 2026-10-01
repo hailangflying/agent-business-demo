@@ -96,7 +96,8 @@ MCP / A2A / Ollama / MySQL
 依赖段：
 
 - `@modelcontextprotocol/sdk`：MCP 客户端和服务端协议实现。
-- `axios`：调用 Ollama 和 A2A HTTP 接口。
+- `@a2a-js/sdk`：官方 A2A 1.0 客户端、服务端、Agent Card 和 Task 生命周期实现。
+- `axios`：调用 Ollama HTTP 接口。
 - `dotenv`：读取 `.env`。
 - `express`：提供 Agent API 和审核 API。
 - `mysql2`：MySQL Promise 连接池和参数化查询。
@@ -216,13 +217,7 @@ TypeScript 编译规则：
 
 ## 8. 跨服务协议
 
-### `src/contracts/a2a.ts`
-
-- `AuditTaskRequest`：主 Agent 发送给审核 Agent 的请求结构。
-- `AuditTaskResponse`：审核 Agent 返回的任务结构。
-- `isAuditTaskRequest()`：运行时检查未知 HTTP JSON。
-
-TypeScript 类型只在编译阶段有效，因此 HTTP 边界仍必须进行运行时校验。
+项目直接使用官方 `@a2a-js/sdk` 的 A2A 1.0 类型，不再维护自定义 A2A Request/Response。主 Agent 通过 `ClientFactory` 发现 Agent Card 并发送 `SendMessage`；审核 Agent 通过 `AgentExecutor` 发布 Task、状态和 Artifact。DataPart 内的业务对象仍需运行时校验，因为协议格式正确不代表业务字段可信。
 
 ## 9. Agent 应用编排
 
@@ -322,14 +317,14 @@ TypeScript 类型只在编译阶段有效，因此 HTTP 边界仍必须进行运
 
 1. 创建 Express 应用和 MySQL 写连接池。
 2. `agentCard` 描述审核 Agent 的身份与能力。
-3. `/.well-known/agent-card` 暴露能力信息。
+3. `/.well-known/agent-card.json` 暴露 A2A 1.0 标准能力信息。
 4. `/health/live` 检查进程。
 5. `/health/ready` 执行 `SELECT 1` 检查 MySQL。
-6. `/a2a/task` 使用 `isAuditTaskRequest()` 校验请求。
-7. 生成 Task ID，并写入 `audit_tasks`。
-8. 返回 HTTP 202 和 `manual_review_required`，不自动批准。
-9. 404 和兜底异常处理中不暴露堆栈。
-10. 配置请求超时和响应头超时。
+6. `/a2a` 由官方 JSON-RPC Handler 处理 `SendMessage`、版本协商和标准错误。
+7. `TicketAuditExecutor` 先发布 `SUBMITTED` 和 `WORKING`，再写入 `audit_tasks`。
+8. 使用 Artifact DataPart 返回 `manual_review_required` 业务结果。
+9. 最后发布 `COMPLETED`；它表示委派完成，不表示工单审批通过。
+10. 协议 Task 由 SDK 的 Task Store 保存，可通过标准方法查询。
 11. 收到退出信号时停止服务并关闭连接池。
 
 ## 14. 数据库初始化

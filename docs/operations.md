@@ -28,7 +28,8 @@ npm test
 
 ```dotenv
 A2A_PORT=8091
-A2A_AUDIT_URL=http://127.0.0.1:8091/a2a/task
+A2A_AUDIT_URL=http://127.0.0.1:8091
+A2A_PUBLIC_URL=http://127.0.0.1:8091
 ```
 
 两项必须保持一致。

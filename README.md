@@ -90,7 +90,8 @@ Copy-Item .env.example .env
 ```dotenv
 OLLAMA_URL=http://localhost:11434/api/chat
 MODEL=qwen3:8b
-A2A_AUDIT_URL=http://127.0.0.1:8090/a2a/task
+A2A_AUDIT_URL=http://127.0.0.1:8090
+A2A_PUBLIC_URL=http://127.0.0.1:8090
 A2A_PORT=8090
 DB_PASSWORD=你的本地MySQL密码
 ```
@@ -198,7 +199,8 @@ exit
 | `DB_PASSWORD` | 是 | MySQL 密码 |
 | `OLLAMA_URL` | 否 | Ollama Chat API 地址 |
 | `MODEL` | 否 | Ollama 模型名 |
-| `A2A_AUDIT_URL` | 否 | 审核 Agent 地址 |
+| `A2A_AUDIT_URL` | 否 | 审核 Agent 基础地址，主 Agent 从这里发现标准 Agent Card |
+| `A2A_PUBLIC_URL` | 否 | 审核 Agent 在 Agent Card 中公布的可访问基础地址 |
 | `A2A_PORT` | 否 | 审核服务端口 |
 | `AGENT_API_PORT` | 否 | Agent HTTP API 端口，默认 8080 |
 | `AGENT_API_KEY` | 否 | 配置后要求业务请求携带 `x-api-key`；生产必填 |
@@ -217,7 +219,8 @@ exit
 
 - `GET /health/live`：进程是否存活，不检查外部依赖。
 - `GET /health/ready`：服务是否可接收流量，会执行 MySQL 探测。
-- `GET /.well-known/agent-card`：返回审核 Agent 能力描述。
+- `GET /.well-known/agent-card.json`：返回 A2A 1.0 标准 Agent Card。
+- `POST /a2a`：A2A 1.0 JSON-RPC 协议端点，由官方 SDK 客户端调用。
 
 Agent API 另提供：
 
